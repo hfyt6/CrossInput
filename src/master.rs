@@ -1,27 +1,36 @@
 use crate::{MessageType};
 use crate::encryption::EncryptionManager;
-use crate::client_type::ClientRole;
 use anyhow::Result;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Mutex};
 use tokio::time::Duration;
 use crate::config::Config;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-use std::time::Instant;
+use crossterm::event::{self, Event, KeyCode, KeyEvent};
+
+use std::collections::VecDeque;
+
+// Structure to hold connection info
+#[derive(Clone)]
+struct ConnectionInfo {
+    address: String,  // Added address field to identify connections
+    stream: Arc<Mutex<TcpStream>>,
+    encryption_manager: EncryptionManager,
+}
 
 /// Main master client implementation
 pub struct MasterClient {
-    connections: Arc<RwLock<HashMap<String, TcpStream>>>,
+    connections: Arc<RwLock<Vec<ConnectionInfo>>>,
+    key_event_queue: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl MasterClient {
     /// Create a new master client
     pub fn new() -> Result<Self> {
         Ok(MasterClient {
-            connections: Arc::new(RwLock::new(HashMap::new())),
+            connections: Arc::new(RwLock::new(Vec::new())),
+            key_event_queue: Arc::new(Mutex::new(VecDeque::new())),
         })
     }
 
@@ -34,17 +43,38 @@ impl MasterClient {
         
         println!("Master client connecting to {} slave(s)", config.slave_connections.len());
         
+        // Store the number of slaves to connect to
+        let total_slaves = config.slave_connections.len();
+
         // Connect to each slave in the configuration
-        for slave_conn in config.slave_connections {
+        for slave_conn in &config.slave_connections {
             let client = self.clone_for_task();
             let address = slave_conn.address.clone();
             let key = slave_conn.key.clone();
+            let slave_address = slave_conn.address.clone(); // Clone the address for error reporting
             
             tokio::spawn(async move {
                 if let Err(e) = client.connect_to_slave(address, key).await {
-                    eprintln!("Error connecting to slave {}: {}", slave_conn.address, e);
+                    eprintln!("Error connecting to slave {}: {}", slave_address, e);
                 }
             });
+        }
+
+        // Wait briefly to allow connections to establish
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Check if we have any connections before starting the queue processor
+        loop {
+            {
+                let connections = self.connections.read().await;
+                if connections.len() >= total_slaves {
+                    println!("All {} slave connections established", connections.len());
+                    break;
+                }
+            }
+            println!("Waiting for all slave connections... ({} of {})", 
+                     self.connections.read().await.len(), total_slaves);
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
         // Spawn keyboard input listener
@@ -54,19 +84,55 @@ impl MasterClient {
                 eprintln!("Error in keyboard input listener: {}", e);
             }
         });
-        
+
+        // Start the background thread to poll the message queue
+        let queue_client = self.clone_for_task();
+        tokio::spawn(async move {
+            if let Err(e) = queue_client.process_message_queue().await {
+                eprintln!("Error processing message queue: {}", e);
+            }
+        });
+
         // Keep the master running
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     }
 
-    /// Connect to a specific slave
+    /// Process the message queue in a background thread and send messages to all slaves
+    async fn process_message_queue(&self) -> Result<()> {
+        println!("Starting message queue processor...");
+        
+        loop {
+            // Process all messages in the queue
+            let mut messages_to_process = Vec::new();
+            {
+                let mut queue = self.key_event_queue.lock().await;
+                while let Some(message) = queue.pop_front() {
+                    messages_to_process.push(message);
+                }
+            }
+            
+            // Send all queued messages to slaves
+            for message in messages_to_process {
+                println!("Processing message from queue: {}", message);
+                
+                // Send the message to all connected slaves
+                if let Err(e) = self.broadcast_to_all_slaves(message).await {
+                    eprintln!("Error broadcasting message to slaves: {}", e);
+                } else {
+                    println!("Message successfully sent to all slaves");
+                }
+            }
+            
+            // Sleep briefly before checking the queue again (every 10ms as required)
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Connect to a specific slave and store the connection
     async fn connect_to_slave(&self, address: String, key: String) -> Result<()> {
         println!("Master attempting to connect to slave at: {}", address);
-        
-        // Create encryption manager for this connection
-        let encryption_manager = EncryptionManager::new(&key)?;
         
         loop {
             match TcpStream::connect(&address).await {
@@ -84,19 +150,64 @@ impl MasterClient {
                     
                     println!("Authentication to slave {} successful", address);
                     
-                    // Handle communication with slave
-                    if let Err(e) = self.handle_slave_communication_with_encryption(stream, encryption_manager.clone()).await {
-                        eprintln!("Error in communication with slave {}: {}", address, e);
+                    // Create encryption manager for this connection
+                    let encryption_manager = EncryptionManager::new(&key)?;
+                    
+                    // Store the connection
+                    {
+                        let mut connections = self.connections.write().await;
+                        
+                        // Check if this connection already exists
+                        let exists = connections.iter().any(|conn_info| {
+                            conn_info.address == address
+                        });
+                        if !exists {
+                            connections.push(ConnectionInfo {
+                                address: address.clone(),
+                                stream: Arc::new(Mutex::new(stream)),
+                                encryption_manager: encryption_manager.clone(),
+                            });
+                            println!("Added connection to slave at {}", address);
+                        } else {
+                            // Update existing connection
+                            for conn_info in connections.iter_mut() {
+                                // In this case, we're just adding new connections
+                            }
+                        }
                     }
                     
-                    // Reconnect after a brief delay if connection ends
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    // Keep the connection alive by listening for messages
+                    let client_clone = self.clone_for_task();
+                    let addr_clone = address.clone();
+                    let enc_manager_clone = encryption_manager;
+                    
+                    tokio::spawn(async move {
+                        if let Err(e) = client_clone.handle_slave_connection_loop(addr_clone.clone(), enc_manager_clone).await {
+                            eprintln!("Connection to slave {} ended: {}", addr_clone, e);
+                            
+                            // Remove the connection from the list
+                            let mut connections = client_clone.connections.write().await;
+                            connections.retain(|conn_info| conn_info.address != addr_clone);
+                            println!("Removed connection to slave at {}", addr_clone);
+                        }
+                    });
+                    
+                    // Exit the loop since we established the connection
+                    return Ok(());
                 }
                 Err(e) => {
                     eprintln!("Failed to connect to slave {}: {}, retrying in 2 seconds...", address, e);
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }
             }
+        }
+    }
+
+    /// Handle an established slave connection loop
+    async fn handle_slave_connection_loop(&self, _address: String, _encryption_manager: EncryptionManager) -> Result<()> {
+        // Just keep the connection alive by periodically checking
+        loop {
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
     }
 
@@ -129,28 +240,12 @@ impl MasterClient {
         }
     }
 
-    /// Handle communication with a slave (sending data)
-    async fn handle_slave_communication_with_encryption(&self, mut stream: TcpStream, encryption_manager: EncryptionManager) -> Result<()> {
-        // In a real implementation, this would receive data from an application
-        // and forward it to the connected slave
-        loop {
-            // For demonstration, we'll send periodic test data
-            let data = format!("Data from master at {:?}", std::time::SystemTime::now()).into_bytes();
-            if let Err(e) = send_data_to_stream_with_encryption(&mut stream, data, &encryption_manager).await {
-                eprintln!("Error sending data: {}", e);
-                break;
-            }
-            
-            // Send a heartbeat periodically to maintain connection
-            tokio::time::sleep(Duration::from_millis(500)).await; // Send data every 0.5 seconds
-        }
-        Ok(())
-    }
 
     /// Clone client for use in async tasks
     fn clone_for_task(&self) -> Self {
         MasterClient {
             connections: self.connections.clone(),
+            key_event_queue: self.key_event_queue.clone(),
         }
     }
 
@@ -161,7 +256,7 @@ impl MasterClient {
         
         loop {
             if event::poll(std::time::Duration::from_millis(50)).unwrap() {
-                if let Event::Key(KeyEvent { code, modifiers, kind, .. }) = event::read().unwrap() {
+                if let Event::Key(KeyEvent { code, modifiers: _, kind, .. }) = event::read().unwrap() {
                     match code {
                         KeyCode::Char('a') | KeyCode::Char('b') => {
                             let key_char = match code {
@@ -172,9 +267,17 @@ impl MasterClient {
                             match kind {
                                 event::KeyEventKind::Press => {
                                     println!("KeyDown: '{}'", key_char);
+                                    // Add message to the key event queue
+                                    let event_message = format!("KeyDown: '{}'", key_char);
+                                    self.add_to_key_event_queue(event_message).await?;
+                                    println!("Event added to queue: KeyDown '{}'", key_char);
                                 },
                                 event::KeyEventKind::Release => {
                                     println!("KeyUp: '{}'", key_char);
+                                    // Add message to the key event queue
+                                    let event_message = format!("KeyUp: '{}'", key_char);
+                                    self.add_to_key_event_queue(event_message).await?;
+                                    println!("Event added to queue: KeyUp '{}'", key_char);
                                 },
                                 event::KeyEventKind::Repeat => {
                                     // Optional: handle repeat events if needed
@@ -192,6 +295,50 @@ impl MasterClient {
                         }
                     }
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Add a message to the key event queue
+    async fn add_to_key_event_queue(&self, message: String) -> Result<()> {
+        println!("Adding message to key event queue: {}", message);
+        
+        // Add the message to the queue
+        {
+            let mut queue = self.key_event_queue.lock().await;
+            queue.push_back(message);
+        }
+        
+        Ok(())
+    }
+
+    /// Broadcast data to all connected slaves with appropriate encryption
+    async fn broadcast_to_all_slaves(&self, message: String) -> Result<()> {
+        println!("Broadcasting message to all connected slaves: {}", message);
+        // Convert the message to bytes for transmission
+        let data = message.clone().into_bytes(); // Clone to preserve the original for logging
+
+        // Get all connections
+        let connections_vec = {
+            let connections = self.connections.read().await;
+            connections.clone()
+        };
+
+        println!("Found {} connected slaves", connections_vec.len());
+
+        // Iterate through all connections and send the data
+        for (index, conn_info) in connections_vec.iter().enumerate() {
+            println!("Sending message to slave #{}: {}", index, message);
+            // Lock the stream temporarily to send data
+            let mut stream_lock = conn_info.stream.lock().await;
+            
+            // Encrypt the data with the specific encryption manager for this connection
+            if let Err(e) = send_data_to_stream_with_encryption(&mut *stream_lock, data.clone(), &conn_info.encryption_manager).await {
+                eprintln!("Error sending data to slave #{}: {}", index, e);
+                // Continue to next connection even if this one fails
+            } else {
+                println!("Successfully sent message to slave #{}: {}", index, message);
             }
         }
         Ok(())
