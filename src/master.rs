@@ -9,6 +9,8 @@ use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tokio::time::Duration;
 use crate::config::Config;
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use std::time::Instant;
 
 /// Main master client implementation
 pub struct MasterClient {
@@ -44,6 +46,14 @@ impl MasterClient {
                 }
             });
         }
+
+        // Spawn keyboard input listener
+        let keyboard_client = self.clone_for_task();
+        tokio::spawn(async move {
+            if let Err(e) = keyboard_client.listen_for_keyboard_input().await {
+                eprintln!("Error in keyboard input listener: {}", e);
+            }
+        });
         
         // Keep the master running
         loop {
@@ -142,6 +152,49 @@ impl MasterClient {
         MasterClient {
             connections: self.connections.clone(),
         }
+    }
+
+    /// Listen for keyboard input and output events
+    async fn listen_for_keyboard_input(&self) -> Result<()> {
+        println!("Keyboard input listener started. Press 'a' or 'b' to see events.");
+        println!("Press 'q' to quit.");
+        
+        loop {
+            if event::poll(std::time::Duration::from_millis(50)).unwrap() {
+                if let Event::Key(KeyEvent { code, modifiers, kind, .. }) = event::read().unwrap() {
+                    match code {
+                        KeyCode::Char('a') | KeyCode::Char('b') => {
+                            let key_char = match code {
+                                KeyCode::Char(c) => c,
+                                _ => unreachable!(),
+                            };
+                            
+                            match kind {
+                                event::KeyEventKind::Press => {
+                                    println!("KeyDown: '{}'", key_char);
+                                },
+                                event::KeyEventKind::Release => {
+                                    println!("KeyUp: '{}'", key_char);
+                                },
+                                event::KeyEventKind::Repeat => {
+                                    // Optional: handle repeat events if needed
+                                },
+                            }
+                        },
+                        KeyCode::Char('q') => {
+                            if kind == event::KeyEventKind::Press {
+                                println!("Quitting keyboard listener...");
+                                break;
+                            }
+                        },
+                        _ => {
+                            // Ignore other keys
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 
