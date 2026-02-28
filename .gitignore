@@ -1,0 +1,43 @@
+# Target directory for compiled binaries and build artifacts
+/target/
+
+# Cargo.lock - typically committed for applications but ignored for libraries
+# Uncomment the next line if this is a library project
+# /Cargo.lock
+
+# Temporary files and logs
+*.log
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Icon?
+desktop.ini
+
+# Configuration files that might contain sensitive data
+config.json
+test_config.json
+
+# Shell script backups
+*.sh~
+
+# Local test files
+test_client.sh.bak
+
+# Debug and release builds
+debug/
+release/
