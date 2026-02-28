@@ -251,47 +251,114 @@ impl MasterClient {
 
     /// Listen for keyboard input and output events
     async fn listen_for_keyboard_input(&self) -> Result<()> {
-        println!("Keyboard input listener started. Press 'a' or 'b' to see events.");
+        println!("Keyboard input listener started. Capturing all keyboard events.");
         println!("Press 'q' to quit.");
         
         loop {
             if event::poll(std::time::Duration::from_millis(50)).unwrap() {
-                if let Event::Key(KeyEvent { code, modifiers: _, kind, .. }) = event::read().unwrap() {
+                if let Event::Key(key_event) = event::read().unwrap() {
+                    let KeyEvent { code, modifiers, kind, state: _ } = key_event;
+                    
+                    // Capture all keyboard events, including modifier keys and combinations
                     match code {
-                        KeyCode::Char('a') | KeyCode::Char('b') => {
-                            let key_char = match code {
-                                KeyCode::Char(c) => c,
-                                _ => unreachable!(),
-                            };
-                            
-                            match kind {
-                                event::KeyEventKind::Press => {
-                                    println!("KeyDown: '{}'", key_char);
-                                    // Add message to the key event queue
-                                    let event_message = format!("KeyDown: '{}'", key_char);
-                                    self.add_to_key_event_queue(event_message).await?;
-                                    println!("Event added to queue: KeyDown '{}'", key_char);
-                                },
-                                event::KeyEventKind::Release => {
-                                    println!("KeyUp: '{}'", key_char);
-                                    // Add message to the key event queue
-                                    let event_message = format!("KeyUp: '{}'", key_char);
-                                    self.add_to_key_event_queue(event_message).await?;
-                                    println!("Event added to queue: KeyUp '{}'", key_char);
-                                },
-                                event::KeyEventKind::Repeat => {
-                                    // Optional: handle repeat events if needed
-                                },
-                            }
-                        },
                         KeyCode::Char('q') => {
                             if kind == event::KeyEventKind::Press {
                                 println!("Quitting keyboard listener...");
                                 break;
                             }
                         },
+                        KeyCode::Char(c) => {
+                            let key_char = c;
+                            
+                            match kind {
+                                event::KeyEventKind::Press => {
+                                    println!("KeyDown: '{}' (modifiers: {:?})", key_char, modifiers);
+                                    // Add message to the key event queue
+                                    let event_message = format!("KeyDown: '{}' (modifiers: {:?})", key_char, modifiers);
+                                    self.add_to_key_event_queue(event_message).await?;
+                                    println!("Event added to queue: KeyDown '{}'", key_char);
+                                },
+                                event::KeyEventKind::Release => {
+                                    println!("KeyUp: '{}' (modifiers: {:?})", key_char, modifiers);
+                                    // Add message to the key event queue
+                                    let event_message = format!("KeyUp: '{}' (modifiers: {:?})", key_char, modifiers);
+                                    self.add_to_key_event_queue(event_message).await?;
+                                    println!("Event added to queue: KeyUp '{}'", key_char);
+                                },
+                                event::KeyEventKind::Repeat => {
+                                    println!("KeyRepeat: '{}' (modifiers: {:?})", key_char, modifiers);
+                                    // Add message to the key event queue
+                                    let event_message = format!("KeyRepeat: '{}' (modifiers: {:?})", key_char, modifiers);
+                                    self.add_to_key_event_queue(event_message).await?;
+                                    println!("Event added to queue: KeyRepeat '{}'", key_char);
+                                },
+                            }
+                        },
+                        // Handle special keys
                         _ => {
-                            // Ignore other keys
+                            // Format special keys appropriately
+                            let key_name = match code {
+                                KeyCode::Backspace => "Backspace",
+                                KeyCode::Enter => "Enter",
+                                KeyCode::Left => "ArrowLeft",
+                                KeyCode::Right => "ArrowRight",
+                                KeyCode::Up => "ArrowUp",
+                                KeyCode::Down => "ArrowDown",
+                                KeyCode::Home => "Home",
+                                KeyCode::End => "End",
+                                KeyCode::PageUp => "PageUp",
+                                KeyCode::PageDown => "PageDown",
+                                KeyCode::Tab => "Tab",
+                                KeyCode::Delete => "Delete",
+                                KeyCode::Insert => "Insert",
+                                KeyCode::F(1) => "F1",
+                                KeyCode::F(2) => "F2",
+                                KeyCode::F(3) => "F3",
+                                KeyCode::F(4) => "F4",
+                                KeyCode::F(5) => "F5",
+                                KeyCode::F(6) => "F6",
+                                KeyCode::F(7) => "F7",
+                                KeyCode::F(8) => "F8",
+                                KeyCode::F(9) => "F9",
+                                KeyCode::F(10) => "F10",
+                                KeyCode::F(11) => "F11",
+                                KeyCode::F(12) => "F12",
+                                KeyCode::Esc => "Escape",
+                                KeyCode::CapsLock => "CapsLock",
+                                KeyCode::ScrollLock => "ScrollLock",
+                                KeyCode::NumLock => "NumLock",
+                                KeyCode::PrintScreen => "PrintScreen",
+                                KeyCode::Pause => "Pause",
+                                KeyCode::Menu => "Menu",
+                                KeyCode::KeypadBegin => "KeypadBegin",
+                                KeyCode::Media(_) => "Media",
+                                KeyCode::Modifier(_) => "Modifier",
+                                _ => "Unknown",
+                            };
+                            
+                            match kind {
+                                event::KeyEventKind::Press => {
+                                    println!("KeyDown: {} (modifiers: {:?})", key_name, modifiers);
+                                    // Add message to the key event queue
+                                    let event_message = format!("KeyDown: {} (modifiers: {:?})", key_name, modifiers);
+                                    self.add_to_key_event_queue(event_message).await?;
+                                    println!("Event added to queue: KeyDown {}", key_name);
+                                },
+                                event::KeyEventKind::Release => {
+                                    println!("KeyUp: {} (modifiers: {:?})", key_name, modifiers);
+                                    // Add message to the key event queue
+                                    let event_message = format!("KeyUp: {} (modifiers: {:?})", key_name, modifiers);
+                                    self.add_to_key_event_queue(event_message).await?;
+                                    println!("Event added to queue: KeyUp {}", key_name);
+                                },
+                                event::KeyEventKind::Repeat => {
+                                    println!("KeyRepeat: {} (modifiers: {:?})", key_name, modifiers);
+                                    // Add message to the key event queue
+                                    let event_message = format!("KeyRepeat: {} (modifiers: {:?})", key_name, modifiers);
+                                    self.add_to_key_event_queue(event_message).await?;
+                                    println!("Event added to queue: KeyRepeat {}", key_name);
+                                },
+                            }
                         }
                     }
                 }
