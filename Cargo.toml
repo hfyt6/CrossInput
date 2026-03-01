@@ -1,5 +1,5 @@
 [package]
-name = "lan_data_client"
+name = "CrossInput"
 version = "0.1.0"
 edition = "2021"
 
