@@ -1,6 +1,6 @@
-# InputShare - Cross-Machine Input Sharing
+# CrossInput - Cross-Machine Input Sharing
 
-InputShare is a Rust-based application that enables sharing keyboard and mouse inputs across machines in a local network. It forwards keyboard and mouse inputs from the current host to other computers via LAN connection. Currently, only Windows is supported.
+CrossInput is a Rust-based application that enables sharing keyboard and mouse inputs across machines in a local network. It forwards keyboard and mouse inputs from the current host to other computers via LAN connection. Currently, only Windows is supported.
 
 ## Features
 
