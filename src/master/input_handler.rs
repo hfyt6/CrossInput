@@ -5,6 +5,16 @@ use tokio::sync::Mutex;
 use tokio::time::Duration;
 use rdev::{EventType, Key};
 
+// Import Windows API functions for clearing stdin buffer on Windows systems
+#[cfg(target_os = "windows")]
+use winapi::um::wincon::FlushConsoleInputBuffer;
+#[cfg(target_os = "windows")]
+use winapi::um::processenv::GetStdHandle;
+#[cfg(target_os = "windows")]
+use winapi::um::winbase::STD_INPUT_HANDLE;
+#[cfg(target_os = "windows")]
+use winapi::um::handleapi::INVALID_HANDLE_VALUE;
+
 /// Input handling functionality for MasterClient
 impl super::MasterClient {
     /// Listen for keyboard and mouse input and output events with global interception
@@ -95,6 +105,9 @@ impl super::MasterClient {
 
                         // Check if the user wants to quit (pressing 'q')
                         if matches!(key, Key::ControlRight) {
+                            // Clear the stdin buffer before stopping the listener
+                            clear_stdin_buffer();
+                            
                             // Stop the listener by setting running to false
                             *running_clone.lock().unwrap() = false;
                             return Some(event);
@@ -249,4 +262,22 @@ fn should_restrict(key: Key) -> bool {
         Key::F7 | Key::F8 | Key::F9 | Key::F10 | Key::F11 | Key::F12 => true,  // Common system function keys
         _ => false,
     }
+}
+
+/// Clears the standard input buffer on Windows systems
+#[cfg(target_os = "windows")]
+fn clear_stdin_buffer() {
+    unsafe {
+        let stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
+        if stdin_handle != INVALID_HANDLE_VALUE {
+            FlushConsoleInputBuffer(stdin_handle);
+        }
+    }
+}
+
+/// Placeholder for other platforms (stdin clearing is platform-specific)
+#[cfg(not(target_os = "windows"))]
+fn clear_stdin_buffer() {
+    // On non-Windows platforms, we could implement alternative approaches
+    // For now, this is a no-op
 }
