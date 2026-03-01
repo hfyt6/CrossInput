@@ -1,4 +1,4 @@
-use crate::{MessageType};
+use crate::{MessageType, KeyboardEvent, MouseEvent, MouseButton, SerializableKey};
 use crate::encryption::EncryptionManager;
 use anyhow::Result;
 use std::sync::Arc;
@@ -24,7 +24,7 @@ struct ConnectionInfo {
 /// Main master client implementation
 pub struct MasterClient {
     connections: Arc<RwLock<Vec<ConnectionInfo>>>,
-    key_event_queue: Arc<Mutex<VecDeque<String>>>,
+    key_event_queue: Arc<Mutex<VecDeque<MessageType>>>,
 }
 
 impl MasterClient {
@@ -117,7 +117,7 @@ impl MasterClient {
             
             // Send all queued messages to slaves
             for message in messages_to_process {
-                println!("Processing message from queue: {}", message);
+                println!("Processing message from queue: {:?}", message);
                 
                 // Send the message to all connected slaves
                 if let Err(e) = self.broadcast_to_all_slaves(message).await {
@@ -251,11 +251,10 @@ impl MasterClient {
         }
     }
 
-    /// Listen for keyboard input and output events with global interception
+    /// Listen for keyboard and mouse input and output events with global interception
     async fn listen_for_keyboard_input(&self) -> Result<()> {
-        // Use rdev::grab to capture and potentially intercept all keyboard events globally
-        println!("Keyboard input listener started. Capturing and intercepting ALL keyboard events including system shortcuts.");
-        println!("Press 'q' to quit.");
+        // Use rdev::grab to capture and potentially intercept all keyboard and mouse events globally
+        println!("Input listener started. Capturing and intercepting ALL keyboard and mouse events including system shortcuts.");
         
         // Create a clone of self to use in the callback
         let client = self.clone_for_task();
@@ -271,15 +270,17 @@ impl MasterClient {
                     return Some(event); // Return the event normally to stop the grabber
                 }
 
-                // Process the keyboard event and decide whether to intercept it
+                // Process the event and decide whether to intercept it
                 match event.event_type {
                     EventType::KeyPress(key) => {
                         // Format the key event message
                         let key_str = format!("{:?}", key);
                         println!("KeyDown: {} (raw event: {:?})", key_str, event);
                         
-                        // Create the event message
-                        let event_message = format!("KeyDown: {} (timestamp: {:?})", key_str, event);
+                        // Create the keyboard event message using serializable key
+                        let keyboard_event = MessageType::Keyboard {
+                            event: KeyboardEvent::Press { key: key.into() }
+                        };
                         
                         // Add to queue in a non-blocking way using a separate thread
                         let client_clone = client.clone_for_task();
@@ -287,18 +288,18 @@ impl MasterClient {
                             // Use a runtime handle to run the async function
                             let rt = tokio::runtime::Runtime::new().unwrap();
                             rt.block_on(async {
-                                if let Err(e) = client_clone.add_to_key_event_queue(event_message).await {
-                                    eprintln!("Error adding key event to queue: {}", e);
+                                if let Err(e) = client_clone.add_to_key_event_queue(keyboard_event).await {
+                                    eprintln!("Error adding keyboard event to queue: {}", e);
                                 }
                             });
                         });
                         
                         // Check if the user wants to quit (pressing 'q')
-                        if matches!(key, Key::KeyQ) {
-                            println!("Quitting keyboard listener...");
-                            // Stop the listener by setting running to false
-                            *running_clone.lock().unwrap() = false;
-                        }
+                        // if matches!(key, Key::KeyQ) {
+                        //     println!("Quitting keyboard listener...");
+                        //     // Stop the listener by setting running to false
+                        //     *running_clone.lock().unwrap() = false;
+                        // }
                         
                         // Determine if we should intercept this key press
                         if should_restrict(key) {
@@ -314,8 +315,10 @@ impl MasterClient {
                         let key_str = format!("{:?}", key);
                         println!("KeyUp: {} (raw event: {:?})", key_str, event);
                         
-                        // Create the event message
-                        let event_message = format!("KeyUp: {} (timestamp: {:?})", key_str, event);
+                        // Create the keyboard event message using serializable key
+                        let keyboard_event = MessageType::Keyboard {
+                            event: KeyboardEvent::Release { key: key.into() }
+                        };
                         
                         // Add to queue in a non-blocking way using a separate thread
                         let client_clone = client.clone_for_task();
@@ -323,8 +326,8 @@ impl MasterClient {
                             // Use a runtime handle to run the async function
                             let rt = tokio::runtime::Runtime::new().unwrap();
                             rt.block_on(async {
-                                if let Err(e) = client_clone.add_to_key_event_queue(event_message).await {
-                                    eprintln!("Error adding key event to queue: {}", e);
+                                if let Err(e) = client_clone.add_to_key_event_queue(keyboard_event).await {
+                                    eprintln!("Error adding keyboard event to queue: {}", e);
                                 }
                             });
                         });
@@ -338,8 +341,117 @@ impl MasterClient {
                             Some(event)
                         }
                     },
+                    EventType::ButtonPress(button) => {
+                        // Format the mouse button press event
+                        println!("Mouse button press: {:?}", button);
+                        
+                        // Create the mouse event message
+                        let mouse_event = MessageType::Mouse {
+                            event: MouseEvent::ButtonPress {
+                                button: button.into(),
+                            }
+                        };
+                        
+                        // Add to queue in a non-blocking way using a separate thread
+                        let client_clone = client.clone_for_task();
+                        std::thread::spawn(move || {
+                            // Use a runtime handle to run the async function
+                            let rt = tokio::runtime::Runtime::new().unwrap();
+                            rt.block_on(async {
+                                if let Err(e) = client_clone.add_to_key_event_queue(mouse_event).await {
+                                    eprintln!("Error adding mouse event to queue: {}", e);
+                                }
+                            });
+                        });
+                        
+                        // Allow the event to pass through by returning Some(event)
+                        Some(event)
+                    },
+                    EventType::ButtonRelease(button) => {
+                        // Format the mouse button release event
+                        println!("Mouse button release: {:?}", button);
+                        
+                        // Create the mouse event message
+                        let mouse_event = MessageType::Mouse {
+                            event: MouseEvent::ButtonRelease {
+                                button: button.into(),
+                            }
+                        };
+                        
+                        // Add to queue in a non-blocking way using a separate thread
+                        let client_clone = client.clone_for_task();
+                        std::thread::spawn(move || {
+                            // Use a runtime handle to run the async function
+                            let rt = tokio::runtime::Runtime::new().unwrap();
+                            rt.block_on(async {
+                                if let Err(e) = client_clone.add_to_key_event_queue(mouse_event).await {
+                                    eprintln!("Error adding mouse event to queue: {}", e);
+                                }
+                            });
+                        });
+                        
+                        // Allow the event to pass through by returning Some(event)
+                        Some(event)
+                    },
+                    EventType::MouseMove { x, y } => {
+                        // Format the mouse move event
+                        println!("Mouse move: at ({}, {})", x, y);
+                        
+                        // Create the mouse event message
+                        let mouse_event = MessageType::Mouse {
+                            event: MouseEvent::Move {
+                                x: x as i32,
+                                y: y as i32,
+                            }
+                        };
+                        
+                        // Add to queue in a non-blocking way using a separate thread
+                        let client_clone = client.clone_for_task();
+                        std::thread::spawn(move || {
+                            // Use a runtime handle to run the async function
+                            let rt = tokio::runtime::Runtime::new().unwrap();
+                            rt.block_on(async {
+                                if let Err(e) = client_clone.add_to_key_event_queue(mouse_event).await {
+                                    eprintln!("Error adding mouse event to queue: {}", e);
+                                }
+                            });
+                        });
+                        
+                        // Allow the event to pass through by returning Some(event)
+                        Some(event)
+                    },
+                    EventType::Wheel {
+                        delta_x,
+                        delta_y,
+                    } => {
+                        // Format the mouse wheel scroll event
+                        println!("Mouse wheel scroll: dx={}, dy={}", delta_x, delta_y);
+                        
+                        // Create the mouse event message
+                        let mouse_event = MessageType::Mouse {
+                            event: MouseEvent::Scroll {
+                                delta_x: delta_x as i32,
+                                delta_y: delta_y as i32,
+                            }
+                        };
+                        
+                        // Add to queue in a non-blocking way using a separate thread
+                        let client_clone = client.clone_for_task();
+                        std::thread::spawn(move || {
+                            // Use a runtime handle to run the async function
+                            let rt = tokio::runtime::Runtime::new().unwrap();
+                            rt.block_on(async {
+                                if let Err(e) = client_clone.add_to_key_event_queue(mouse_event).await {
+                                    eprintln!("Error adding mouse event to queue: {}", e);
+                                }
+                            });
+                        });
+                        
+                        // Allow the event to pass through by returning Some(event)
+                        Some(event)
+                    },
                     _ => {
-                        // For non-keyboard events, allow them to pass through
+                        // For other events, allow them to pass through
                         Some(event)
                     }
                 }
@@ -358,13 +470,13 @@ impl MasterClient {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
 
-        println!("Keyboard listener stopped.");
+        println!("Input listener stopped.");
         Ok(())
     }
 
     /// Add a message to the key event queue
-    async fn add_to_key_event_queue(&self, message: String) -> Result<()> {
-        println!("Adding message to key event queue: {}", message);
+    async fn add_to_key_event_queue(&self, message: MessageType) -> Result<()> {
+        println!("Adding message to key event queue: {:?}", message);
         
         // Add the message to the queue
         {
@@ -376,11 +488,8 @@ impl MasterClient {
     }
 
     /// Broadcast data to all connected slaves with appropriate encryption
-    async fn broadcast_to_all_slaves(&self, message: String) -> Result<()> {
-        println!("Broadcasting message to all connected slaves: {}", message);
-        // Convert the message to bytes for transmission
-        let data = message.clone().into_bytes(); // Clone to preserve the original for logging
-
+    async fn broadcast_to_all_slaves(&self, message: MessageType) -> Result<()> {
+        println!("Broadcasting message to all connected slaves: {:?}", message);
         // Get all connections
         let connections_vec = {
             let connections = self.connections.read().await;
@@ -391,16 +500,16 @@ impl MasterClient {
 
         // Iterate through all connections and send the data
         for (index, conn_info) in connections_vec.iter().enumerate() {
-            println!("Sending message to slave #{}: {}", index, message);
+            println!("Sending message to slave #{}: {:?}", index, message);
             // Lock the stream temporarily to send data
             let mut stream_lock = conn_info.stream.lock().await;
             
             // Encrypt the data with the specific encryption manager for this connection
-            if let Err(e) = send_data_to_stream_with_encryption(&mut *stream_lock, data.clone(), &conn_info.encryption_manager).await {
+            if let Err(e) = send_data_to_stream_with_encryption(&mut *stream_lock, message.clone(), &conn_info.encryption_manager).await {
                 eprintln!("Error sending data to slave #{}: {}", index, e);
                 // Continue to next connection even if this one fails
             } else {
-                println!("Successfully sent message to slave #{}: {}", index, message);
+                println!("Successfully sent message to slave #{}: {:?}", index, message);
             }
         }
         Ok(())
@@ -408,15 +517,21 @@ impl MasterClient {
 }
 
 /// Send data to a stream with encryption
-pub async fn send_data_to_stream_with_encryption(stream: &mut TcpStream, data: Vec<u8>, encryption_manager: &EncryptionManager) -> Result<()> {
-    // Encrypt data before sending
-    let encrypted_data = encryption_manager.encrypt(&data)?;
-    
-    let message = MessageType::Data {
-        payload: encrypted_data,
+pub async fn send_data_to_stream_with_encryption(stream: &mut TcpStream, message: MessageType, encryption_manager: &EncryptionManager) -> Result<()> {
+    // Encrypt data before sending based on message type
+    let message_to_send = match &message {
+        MessageType::Keyboard { .. } | MessageType::Mouse { .. } => {
+            // For keyboard and mouse events, serialize and encrypt the entire message
+            let serialized = serde_json::to_vec(&message)?;
+            let encrypted_data = encryption_manager.encrypt(&serialized)?;
+            MessageType::Data {
+                payload: encrypted_data,
+            }
+        },
+        _ => message, // For other message types, send as-is
     };
     
-    let serialized = serde_json::to_vec(&message)?;
+    let serialized = serde_json::to_vec(&message_to_send)?;
     let len = serialized.len() as u32;
     
     stream.write_all(&len.to_le_bytes()).await?;

@@ -1,10 +1,13 @@
-use crate::{MessageType};
+use crate::{MessageType, KeyboardEvent, MouseEvent, MouseButton, SerializableKey};
 use crate::encryption::EncryptionManager;
 use anyhow::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{timeout, Duration};
-use rdev::{simulate, EventType, Key};
+use rdev::{simulate, EventType, Key, Button};
+use enigo::{Enigo, Settings, Direction};
+use enigo::Mouse;
+use lazy_static::lazy_static;
 
 /// Maximum delay allowed for data transmission (100ms as specified)
 const MAX_DELAY: Duration = Duration::from_millis(100);
@@ -118,26 +121,69 @@ pub async fn handle_slave_data_receiving(mut stream: TcpStream, encryption_manag
                         
                         match message {
                             MessageType::Data { payload } => {
-                                // Decrypt payload if encrypted
+                                // Decrypt payload if encrypted - this contains serialized keyboard/mouse events
                                 let decrypted_payload = encryption_manager.decrypt(&payload)?;
-                                let event_str = String::from_utf8_lossy(&decrypted_payload);
-                                println!("Received data: {:?}", event_str);
                                 
-                                // Parse and simulate keyboard events
-                                if let Err(e) = simulate_keyboard_event(&event_str) {
+                                // Try to deserialize the decrypted payload as a MessageType
+                                match serde_json::from_slice(&decrypted_payload) as Result<MessageType, _> {
+                                    Ok(inner_message) => {
+                                        match inner_message {
+                                            MessageType::Keyboard { event } => {
+                                                println!("Received keyboard event: {:?}", event);
+                                                if let Err(e) = simulate_keyboard_event_from_struct(event) {
+                                                    eprintln!("Error simulating keyboard event: {}", e);
+                                                }
+                                            },
+                                            MessageType::Mouse { event } => {
+                                                println!("Received mouse event: {:?}", event);
+                                                if let Err(e) = simulate_mouse_event_from_struct(event) {
+                                                    eprintln!("Error simulating mouse event: {}", e);
+                                                }
+                                            },
+                                            _ => {
+                                                println!("Received unknown message type in payload: {:?}", inner_message);
+                                            }
+                                        }
+                                    },
+                                    Err(e) => {
+                                        // If deserialization fails, treat as old string format for backward compatibility
+                                        let event_str = String::from_utf8_lossy(&decrypted_payload);
+                                        println!("Received data: {:?}", event_str);
+                                        
+                                        // Parse and simulate keyboard events from string format
+                                        if let Err(e) = simulate_keyboard_event(&event_str) {
+                                            eprintln!("Error simulating keyboard event: {}", e);
+                                        }
+                                    }
+                                }
+                            },
+                            MessageType::Keyboard { event } => {
+                                println!("Received keyboard event: {:?}", event);
+                                if let Err(e) = simulate_keyboard_event_from_struct(event) {
                                     eprintln!("Error simulating keyboard event: {}", e);
                                 }
-                            }
+                            },
+                            MessageType::Mouse { event } => {
+                                println!("Received mouse event: {:?}", event);
+                                if let Err(e) = simulate_mouse_event_from_struct(event) {
+                                    eprintln!("Error simulating mouse event: {}", e);
+                                }
+                            },
                             MessageType::Heartbeat => {
                                 println!("Received heartbeat");
-                            }
+                            },
                             MessageType::Disconnect => {
                                 println!("Received disconnect signal");
                                 break;
-                            }
-                            _ => {
-                                // Ignore other message types
-                            }
+                            },
+                            MessageType::Authenticate { .. } => {
+                                // Ignore authenticate messages in this context
+                                println!("Received unexpected authenticate message");
+                            },
+                            MessageType::AuthResponse { .. } => {
+                                // Ignore auth response messages in this context
+                                println!("Received unexpected auth response message");
+                            },
                         }
                     }
                     Ok(Err(e)) => {
@@ -163,6 +209,75 @@ pub async fn handle_slave_data_receiving(mut stream: TcpStream, encryption_manag
         }
     }
     
+    Ok(())
+}
+
+/// Simulate keyboard events from structured data
+fn simulate_keyboard_event_from_struct(event: KeyboardEvent) -> Result<()> {
+    match event {
+        KeyboardEvent::Press { key } => {
+            let key_clone = key.clone();
+            simulate(&EventType::KeyPress(key_clone.into()))
+                .map_err(|_| anyhow::anyhow!("Failed to simulate key press"))?;
+            println!("Simulated key press: {:?}", key);
+        },
+        KeyboardEvent::Release { key } => {
+            let key_clone = key.clone();
+            simulate(&EventType::KeyRelease(key_clone.into()))
+                .map_err(|_| anyhow::anyhow!("Failed to simulate key release"))?;
+            println!("Simulated key release: {:?}", key);
+        },
+    }
+    Ok(())
+}
+
+/// Simulate mouse events from structured data
+fn simulate_mouse_event_from_struct(event: MouseEvent) -> Result<()> {
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| {
+        anyhow::anyhow!("Failed to initialize Enigo: {}", e)
+    })?;
+
+    match event {
+        MouseEvent::ButtonPress { button } => {
+            let enigo_button = match button {
+                MouseButton::Left => enigo::Button::Left,
+                MouseButton::Right => enigo::Button::Right,
+                MouseButton::Middle => enigo::Button::Middle,
+                MouseButton::Unknown(_) => enigo::Button::Left, // Default to left button
+            };
+            enigo.button(enigo_button, Direction::Press)
+                .map_err(|e| anyhow::anyhow!("Failed to simulate mouse button press: {}", e))?;
+            println!("Simulated mouse button press: {:?}", button);
+        },
+        MouseEvent::ButtonRelease { button } => {
+            let enigo_button = match button {
+                MouseButton::Left => enigo::Button::Left,
+                MouseButton::Right => enigo::Button::Right,
+                MouseButton::Middle => enigo::Button::Middle,
+                MouseButton::Unknown(_) => enigo::Button::Left, // Default to left button
+            };
+            enigo.button(enigo_button, Direction::Release)
+                .map_err(|e| anyhow::anyhow!("Failed to simulate mouse button release: {}", e))?;
+            println!("Simulated mouse button release: {:?}", button);
+        },
+        MouseEvent::Move { x, y } => {
+            enigo.move_mouse(x as i32, y as i32, enigo::Coordinate::Abs)
+                .map_err(|e| anyhow::anyhow!("Failed to simulate mouse move: {}", e))?;
+            println!("Simulated mouse move to: ({}, {})", x, y);
+        },
+        MouseEvent::Scroll { delta_x, delta_y } => {
+            // Handle horizontal scrolling (delta_x) and vertical scrolling (delta_y)
+            if delta_y != 0 {
+                enigo.scroll(delta_y as i32, enigo::Axis::Vertical)
+                    .map_err(|e| anyhow::anyhow!("Failed to simulate mouse scroll: {}", e))?;
+            }
+            if delta_x != 0 {
+                enigo.scroll(delta_x as i32, enigo::Axis::Horizontal)
+                    .map_err(|e| anyhow::anyhow!("Failed to simulate mouse horizontal scroll: {}", e))?;
+            }
+            println!("Simulated mouse wheel scroll: dx={}, dy={}", delta_x, delta_y);
+        },
+    }
     Ok(())
 }
 

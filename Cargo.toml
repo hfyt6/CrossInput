@@ -13,8 +13,10 @@ anyhow = "1.0"
 aes-gcm = "0.10"
 rand = "0.8"
 thiserror = "1.0"
-crossterm = "0.27"
+crossterm = "0.7"
 rdev = { version = "0.5", features = ["unstable_grab"] }
+enigo = "0.2"
+lazy_static = "1.4"
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "minwindef", "winnt"] }
 
