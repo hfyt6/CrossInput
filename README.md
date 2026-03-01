@@ -30,10 +30,14 @@ CrossInput 是一个基于 Rust 开发的应用程序，用于在局域网内的
 
 ```json
 {
-  "shared_key": "mysecretkey",
   "ip": "0.0.0.0",
   "port": 8080,
-  "slave_addresses": []
+  "slave_connections": [
+    {
+      "address": "192.168.1.1:8081",
+      "key": "aaa"
+    }
+  ]
 }
 ```
 

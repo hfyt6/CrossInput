@@ -31,10 +31,14 @@ Create a `config.json` file with the following content:
 
 ```json
 {
-  "shared_key": "mysecretkey",
   "ip": "0.0.0.0",
   "port": 8080,
-  "slave_addresses": []
+  "slave_connections": [
+    {
+      "address": "192.168.1.1:8081",
+      "key": "aaa"
+    }
+  ]
 }
 ```
 
