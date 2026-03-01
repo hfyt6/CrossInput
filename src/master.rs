@@ -13,12 +13,20 @@ use std::collections::VecDeque;
 // Import rdev for low-level keyboard/mouse event capturing
 use rdev::{grab, EventType, Key};
 
+#[derive(Debug, Clone, PartialEq)]
+enum ConnectionStatus {
+    Connected,
+    Disconnected,
+}
+
 // Structure to hold connection info
 #[derive(Clone)]
 struct ConnectionInfo {
     address: String,  // Added address field to identify connections
-    stream: Arc<Mutex<TcpStream>>,
+    stream: Arc<Mutex<Option<TcpStream>>>,
     encryption_manager: EncryptionManager,
+    status: Arc<Mutex<ConnectionStatus>>,
+    key: String,  // Store the key for reconnection
 }
 
 /// Main master client implementation
@@ -166,14 +174,21 @@ impl MasterClient {
                         if !exists {
                             connections.push(ConnectionInfo {
                                 address: address.clone(),
-                                stream: Arc::new(Mutex::new(stream)),
+                                stream: Arc::new(Mutex::new(Some(stream))),
                                 encryption_manager: encryption_manager.clone(),
+                                status: Arc::new(Mutex::new(ConnectionStatus::Connected)),
+                                key: key.clone(),
                             });
                             println!("Added connection to slave at {}", address);
                         } else {
-                            // Update existing connection
-                            for _conn_info in connections.iter_mut() {
-                                // In this case, we're just adding new connections
+                            // Update existing connection - we need to move the stream out of the loop
+                            let mut stream_option = Some(stream);
+                            for conn_info in connections.iter_mut() {
+                                if conn_info.address == address {
+                                    *conn_info.stream.lock().await = stream_option.take();
+                                    *conn_info.status.lock().await = ConnectionStatus::Connected;
+                                    break; // Exit the loop after updating
+                                }
                             }
                         }
                     }
@@ -187,10 +202,8 @@ impl MasterClient {
                         if let Err(e) = client_clone.handle_slave_connection_loop(addr_clone.clone(), enc_manager_clone).await {
                             eprintln!("Connection to slave {} ended: {}", addr_clone, e);
                             
-                            // Remove the connection from the list
-                            let mut connections = client_clone.connections.write().await;
-                            connections.retain(|conn_info| conn_info.address != addr_clone);
-                            println!("Removed connection to slave at {}", addr_clone);
+                            // Mark the connection as disconnected and start reconnection
+                            client_clone.mark_disconnected_and_start_reconnection(addr_clone.clone(), key.clone()).await;
                         }
                     });
                     
@@ -206,11 +219,112 @@ impl MasterClient {
     }
 
     /// Handle an established slave connection loop
-    async fn handle_slave_connection_loop(&self, _address: String, _encryption_manager: EncryptionManager) -> Result<()> {
+    async fn handle_slave_connection_loop(&self, address: String, _encryption_manager: EncryptionManager) -> Result<()> {
         // Just keep the connection alive by periodically checking
         loop {
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
+    }
+
+    /// Mark a connection as disconnected and start reconnection thread
+    async fn mark_disconnected_and_start_reconnection(&self, address: String, key: String) {
+        println!("Marked connection to {} as disconnected, starting reconnection", address);
+
+        // Find the connection and mark it as disconnected
+        let found_connection = {
+            println!("About to acquire read lock on connections for {}", address);
+            let connections = self.connections.read().await;
+            println!("Acquired read lock on connections for {}", address);
+            let mut found = false;
+            println!("Iterating through {} connections to find {}", connections.len(), address);
+            for (i, conn_info) in connections.iter().enumerate() {
+                println!("Checking connection #{}: {} against {}", i, conn_info.address, address);
+                if conn_info.address == address {
+                    println!("Found matching connection for {}, about to acquire status lock", address);
+                    *conn_info.status.lock().await = ConnectionStatus::Disconnected;
+                    println!("Set status to Disconnected for {}", address);
+                    println!("About to acquire stream lock for {}", address);
+                    // *conn_info.stream.lock().await = None;
+                    println!("Set stream to None for {}", address);
+                    found = true;
+                    println!("Found connection and marked as disconnected for {}", address);
+                    break;
+                } else {
+                    println!("Connection #{}: {} does not match {}", i, conn_info.address, address);
+                }
+            }
+            println!("Finished iterating through connections, found: {}", found);
+            found
+        };
+
+        if !found_connection {
+            println!("Warning: Could not find connection for {} to mark as disconnected", address);
+        } else {
+            println!("Successfully marked connection for {} as disconnected", address);
+        }
+
+        // Start a background thread to reconnect
+        let client_clone = self.clone_for_task();
+        let address_clone = address.clone();
+        let key_clone = key.clone();
+        println!("About to spawn reconnection task for {}", address);
+        tokio::spawn(async move {
+            println!("Reconnection task spawned for {}", address_clone);
+            loop {
+                // Wait 1 second before attempting to reconnect
+                println!("Attempting to reconnect to {} in 1 second...", address_clone);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                
+                match TcpStream::connect(&address_clone).await {
+                    Ok(mut stream) => {
+                        println!("Successfully connected to {}, attempting authentication", address_clone);
+                        // Try to authenticate
+                        match client_clone.authenticate_to_slave(&mut stream, &key_clone).await {
+                            Ok(auth_success) => {
+                                if auth_success {
+                                    println!("Authentication successful for {}", address_clone);
+                                    // Reconnection successful, update connection info
+                                    let mut connections = client_clone.connections.write().await;
+                                    for conn_info in connections.iter_mut() {
+                                        if conn_info.address == address_clone {
+                                            println!("About to acquire stream lock for {} during reconnection", address_clone);
+                                            *conn_info.stream.lock().await = Some(stream);
+                                            println!("Stream updated for {} during reconnection", address_clone);
+                                            println!("About to acquire status lock for {} during reconnection", address_clone);
+                                            *conn_info.status.lock().await = ConnectionStatus::Connected;
+                                            println!("Status updated to Connected for {} during reconnection", address_clone);
+                                            println!("Reconnected to slave at {}", address_clone);
+                                            return; // Exit the reconnection loop
+                                        }
+                                    }
+                                    println!("Could not find connection info for {} during reconnection", address_clone);
+                                } else {
+                                    println!("Reconnection to {} failed: authentication failed", address_clone);
+                                }
+                            }
+                            Err(e) => {
+                                println!("Reconnection to {} failed: authentication error: {}", address_clone, e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("Reconnection to {} failed: connection error: {}", address_clone, e);
+                    }
+                }
+            }
+        });
+        println!("Reconnection task has been spawned for {}", address);
+    }
+
+    /// Check if there are any connected slaves
+    async fn has_connected_slaves(&self) -> bool {
+        let connections = self.connections.read().await;
+        for conn_info in connections.iter() {
+            if *conn_info.status.lock().await == ConnectionStatus::Connected {
+                return true;
+            }
+        }
+        false
     }
 
     /// Authenticate to a slave
@@ -270,6 +384,26 @@ impl MasterClient {
                     return Some(event); // Return the event normally to stop the grabber
                 }
 
+                // Check if there are any connected slaves before processing the event
+                // We need to use a runtime to call async functions from this sync context
+                let has_connected = {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async {
+                        client.has_connected_slaves().await
+                    })
+                };
+
+                // If no slaves are connected, return the event without intercepting
+                if !has_connected {
+                    // Clear the message queue when no connections are available
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async {
+                        let mut queue = client.key_event_queue.lock().await;
+                        queue.clear();
+                    });
+                    return Some(event);
+                }
+
                 // Process the event and decide whether to intercept it
                 match event.event_type {
                     EventType::KeyPress(key) => {
@@ -293,13 +427,6 @@ impl MasterClient {
                                 }
                             });
                         });
-                        
-                        // Check if the user wants to quit (pressing 'q')
-                        // if matches!(key, Key::KeyQ) {
-                        //     println!("Quitting keyboard listener...");
-                        //     // Stop the listener by setting running to false
-                        //     *running_clone.lock().unwrap() = false;
-                        // }
                         
                         // Determine if we should intercept this key press
                         if should_restrict(key) {
@@ -331,6 +458,14 @@ impl MasterClient {
                                 }
                             });
                         });
+
+                        // Check if the user wants to quit (pressing 'q')
+                        if matches!(key, Key::ControlRight) {
+                            println!("Quitting keyboard listener...");
+                            // Stop the listener by setting running to false
+                            *running_clone.lock().unwrap() = false;
+                            return Some(event);
+                        }
                         
                         // Determine if we should intercept this key release
                         if should_restrict(key) {
@@ -366,6 +501,7 @@ impl MasterClient {
                         
                         // Allow the event to pass through by returning Some(event)
                         Some(event)
+                        // None
                     },
                     EventType::ButtonRelease(button) => {
                         // Format the mouse button release event
@@ -391,7 +527,8 @@ impl MasterClient {
                         });
                         
                         // Allow the event to pass through by returning Some(event)
-                        Some(event)
+                        // Some(event)
+                        None
                     },
                     EventType::MouseMove { x, y } => {
                         // Format the mouse move event
@@ -419,6 +556,7 @@ impl MasterClient {
                         
                         // Allow the event to pass through by returning Some(event)
                         Some(event)
+                        // None
                     },
                     EventType::Wheel {
                         delta_x,
@@ -448,7 +586,8 @@ impl MasterClient {
                         });
                         
                         // Allow the event to pass through by returning Some(event)
-                        Some(event)
+                        // Some(event)
+                        None
                     },
                     _ => {
                         // For other events, allow them to pass through
@@ -500,16 +639,24 @@ impl MasterClient {
 
         // Iterate through all connections and send the data
         for (index, conn_info) in connections_vec.iter().enumerate() {
-            println!("Sending message to slave #{}: {:?}", index, message);
-            // Lock the stream temporarily to send data
-            let mut stream_lock = conn_info.stream.lock().await;
-            
-            // Encrypt the data with the specific encryption manager for this connection
-            if let Err(e) = send_data_to_stream_with_encryption(&mut *stream_lock, message.clone(), &conn_info.encryption_manager).await {
-                eprintln!("Error sending data to slave #{}: {}", index, e);
-                // Continue to next connection even if this one fails
+            // Only send to connected slaves
+            if *conn_info.status.lock().await == ConnectionStatus::Connected {
+                println!("Sending message to slave #{}: {:?}", index, message);
+                // Lock the stream temporarily to send data
+                let mut stream_lock = conn_info.stream.lock().await;
+                
+                // Encrypt the data with the specific encryption manager for this connection
+                if let Err(e) = send_data_to_stream_with_encryption(&mut *stream_lock, message.clone(), &conn_info.encryption_manager).await {
+                    eprintln!("Error sending data to slave #{}: {}", index, e);
+                    println!("About to call mark_disconnected_and_start_reconnect for {}", conn_info.address);
+                    // Mark the connection as disconnected and start reconnection
+                    self.mark_disconnected_and_start_reconnection(conn_info.address.clone(), conn_info.key.clone()).await;
+                    println!("Called mark_disconnected_and_start_reconnect for {}", conn_info.address);
+                } else {
+                    println!("Successfully sent message to slave #{}: {:?}", index, message);
+                }
             } else {
-                println!("Successfully sent message to slave #{}: {:?}", index, message);
+                println!("Skipping disconnected slave #{}: {:?}", index, message);
             }
         }
         Ok(())
@@ -517,25 +664,29 @@ impl MasterClient {
 }
 
 /// Send data to a stream with encryption
-pub async fn send_data_to_stream_with_encryption(stream: &mut TcpStream, message: MessageType, encryption_manager: &EncryptionManager) -> Result<()> {
-    // Encrypt data before sending based on message type
-    let message_to_send = match &message {
-        MessageType::Keyboard { .. } | MessageType::Mouse { .. } => {
-            // For keyboard and mouse events, serialize and encrypt the entire message
-            let serialized = serde_json::to_vec(&message)?;
-            let encrypted_data = encryption_manager.encrypt(&serialized)?;
-            MessageType::Data {
-                payload: encrypted_data,
-            }
-        },
-        _ => message, // For other message types, send as-is
-    };
-    
-    let serialized = serde_json::to_vec(&message_to_send)?;
-    let len = serialized.len() as u32;
-    
-    stream.write_all(&len.to_le_bytes()).await?;
-    stream.write_all(&serialized).await?;
+pub async fn send_data_to_stream_with_encryption(stream: &mut Option<TcpStream>, message: MessageType, encryption_manager: &EncryptionManager) -> Result<()> {
+    if let Some(ref mut tcp_stream) = stream {
+        // Encrypt data before sending based on message type
+        let message_to_send = match &message {
+            MessageType::Keyboard { .. } | MessageType::Mouse { .. } => {
+                // For keyboard and mouse events, serialize and encrypt the entire message
+                let serialized = serde_json::to_vec(&message)?;
+                let encrypted_data = encryption_manager.encrypt(&serialized)?;
+                MessageType::Data {
+                    payload: encrypted_data,
+                }
+            },
+            _ => message, // For other message types, send as-is
+        };
+        
+        let serialized = serde_json::to_vec(&message_to_send)?;
+        let len = serialized.len() as u32;
+        
+        tcp_stream.write_all(&len.to_le_bytes()).await?;
+        tcp_stream.write_all(&serialized).await?;
+    } else {
+        return Err(anyhow::anyhow!("Stream is disconnected"));
+    }
     
     Ok(())
 }
