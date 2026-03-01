@@ -125,13 +125,13 @@ impl MasterClient {
             
             // Send all queued messages to slaves
             for message in messages_to_process {
-                println!("Processing message from queue: {:?}", message);
+                // println!("Processing message from queue: {:?}", message);
                 
                 // Send the message to all connected slaves
                 if let Err(e) = self.broadcast_to_all_slaves(message).await {
                     eprintln!("Error broadcasting message to slaves: {}", e);
                 } else {
-                    println!("Message successfully sent to all slaves");
+                    // println!("Message successfully sent to all slaves");
                 }
             }
             
@@ -232,44 +232,28 @@ impl MasterClient {
 
         // Find the connection and mark it as disconnected
         let found_connection = {
-            println!("About to acquire read lock on connections for {}", address);
             let connections = self.connections.read().await;
-            println!("Acquired read lock on connections for {}", address);
             let mut found = false;
-            println!("Iterating through {} connections to find {}", connections.len(), address);
-            for (i, conn_info) in connections.iter().enumerate() {
-                println!("Checking connection #{}: {} against {}", i, conn_info.address, address);
+            for conn_info in connections.iter() {
                 if conn_info.address == address {
-                    println!("Found matching connection for {}, about to acquire status lock", address);
                     *conn_info.status.lock().await = ConnectionStatus::Disconnected;
-                    println!("Set status to Disconnected for {}", address);
-                    println!("About to acquire stream lock for {}", address);
-                    // *conn_info.stream.lock().await = None;
-                    println!("Set stream to None for {}", address);
+                    *conn_info.stream.lock().await = None;
                     found = true;
-                    println!("Found connection and marked as disconnected for {}", address);
                     break;
-                } else {
-                    println!("Connection #{}: {} does not match {}", i, conn_info.address, address);
                 }
             }
-            println!("Finished iterating through connections, found: {}", found);
             found
         };
 
         if !found_connection {
             println!("Warning: Could not find connection for {} to mark as disconnected", address);
-        } else {
-            println!("Successfully marked connection for {} as disconnected", address);
         }
 
         // Start a background thread to reconnect
         let client_clone = self.clone_for_task();
         let address_clone = address.clone();
         let key_clone = key.clone();
-        println!("About to spawn reconnection task for {}", address);
         tokio::spawn(async move {
-            println!("Reconnection task spawned for {}", address_clone);
             loop {
                 // Wait 1 second before attempting to reconnect
                 println!("Attempting to reconnect to {} in 1 second...", address_clone);
@@ -277,33 +261,26 @@ impl MasterClient {
                 
                 match TcpStream::connect(&address_clone).await {
                     Ok(mut stream) => {
-                        println!("Successfully connected to {}, attempting authentication", address_clone);
                         // Try to authenticate
                         match client_clone.authenticate_to_slave(&mut stream, &key_clone).await {
                             Ok(auth_success) => {
                                 if auth_success {
-                                    println!("Authentication successful for {}", address_clone);
                                     // Reconnection successful, update connection info
                                     let mut connections = client_clone.connections.write().await;
                                     for conn_info in connections.iter_mut() {
                                         if conn_info.address == address_clone {
-                                            println!("About to acquire stream lock for {} during reconnection", address_clone);
                                             *conn_info.stream.lock().await = Some(stream);
-                                            println!("Stream updated for {} during reconnection", address_clone);
-                                            println!("About to acquire status lock for {} during reconnection", address_clone);
                                             *conn_info.status.lock().await = ConnectionStatus::Connected;
-                                            println!("Status updated to Connected for {} during reconnection", address_clone);
                                             println!("Reconnected to slave at {}", address_clone);
                                             return; // Exit the reconnection loop
                                         }
                                     }
-                                    println!("Could not find connection info for {} during reconnection", address_clone);
                                 } else {
                                     println!("Reconnection to {} failed: authentication failed", address_clone);
                                 }
                             }
-                            Err(e) => {
-                                println!("Reconnection to {} failed: authentication error: {}", address_clone, e);
+                            Err(_) => {
+                                println!("Reconnection to {} failed: authentication error", address_clone);
                             }
                         }
                     }
@@ -313,7 +290,6 @@ impl MasterClient {
                 }
             }
         });
-        println!("Reconnection task has been spawned for {}", address);
     }
 
     /// Check if there are any connected slaves
@@ -368,7 +344,7 @@ impl MasterClient {
     /// Listen for keyboard and mouse input and output events with global interception
     async fn listen_for_keyboard_input(&self) -> Result<()> {
         // Use rdev::grab to capture and potentially intercept all keyboard and mouse events globally
-        println!("Input listener started. Capturing and intercepting ALL keyboard and mouse events including system shortcuts.");
+        println!("Input listener started.");
         
         // Create a clone of self to use in the callback
         let client = self.clone_for_task();
@@ -407,10 +383,6 @@ impl MasterClient {
                 // Process the event and decide whether to intercept it
                 match event.event_type {
                     EventType::KeyPress(key) => {
-                        // Format the key event message
-                        let key_str = format!("{:?}", key);
-                        println!("KeyDown: {} (raw event: {:?})", key_str, event);
-                        
                         // Create the keyboard event message using serializable key
                         let keyboard_event = MessageType::Keyboard {
                             event: KeyboardEvent::Press { key: key.into() }
@@ -438,10 +410,6 @@ impl MasterClient {
                         }
                     },
                     EventType::KeyRelease(key) => {
-                        // Format the key event message
-                        let key_str = format!("{:?}", key);
-                        println!("KeyUp: {} (raw event: {:?})", key_str, event);
-                        
                         // Create the keyboard event message using serializable key
                         let keyboard_event = MessageType::Keyboard {
                             event: KeyboardEvent::Release { key: key.into() }
@@ -461,7 +429,6 @@ impl MasterClient {
 
                         // Check if the user wants to quit (pressing 'q')
                         if matches!(key, Key::ControlRight) {
-                            println!("Quitting keyboard listener...");
                             // Stop the listener by setting running to false
                             *running_clone.lock().unwrap() = false;
                             return Some(event);
@@ -477,9 +444,6 @@ impl MasterClient {
                         }
                     },
                     EventType::ButtonPress(button) => {
-                        // Format the mouse button press event
-                        println!("Mouse button press: {:?}", button);
-                        
                         // Create the mouse event message
                         let mouse_event = MessageType::Mouse {
                             event: MouseEvent::ButtonPress {
@@ -500,13 +464,10 @@ impl MasterClient {
                         });
                         
                         // Allow the event to pass through by returning Some(event)
-                        Some(event)
-                        // None
+                        // Some(event)
+                        None
                     },
                     EventType::ButtonRelease(button) => {
-                        // Format the mouse button release event
-                        println!("Mouse button release: {:?}", button);
-                        
                         // Create the mouse event message
                         let mouse_event = MessageType::Mouse {
                             event: MouseEvent::ButtonRelease {
@@ -531,9 +492,6 @@ impl MasterClient {
                         None
                     },
                     EventType::MouseMove { x, y } => {
-                        // Format the mouse move event
-                        println!("Mouse move: at ({}, {})", x, y);
-                        
                         // Create the mouse event message
                         let mouse_event = MessageType::Mouse {
                             event: MouseEvent::Move {
@@ -562,14 +520,11 @@ impl MasterClient {
                         delta_x,
                         delta_y,
                     } => {
-                        // Format the mouse wheel scroll event
-                        println!("Mouse wheel scroll: dx={}, dy={}", delta_x, delta_y);
-                        
                         // Create the mouse event message
                         let mouse_event = MessageType::Mouse {
                             event: MouseEvent::Scroll {
                                 delta_x: delta_x as i32,
-                                delta_y: delta_y as i32,
+                                delta_y: (-delta_y) as i32,
                             }
                         };
                         
@@ -609,13 +564,12 @@ impl MasterClient {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
 
-        println!("Input listener stopped.");
         Ok(())
     }
 
     /// Add a message to the key event queue
     async fn add_to_key_event_queue(&self, message: MessageType) -> Result<()> {
-        println!("Adding message to key event queue: {:?}", message);
+        // println!("Adding message to key event queue: {:?}", message);
         
         // Add the message to the queue
         {
@@ -628,14 +582,14 @@ impl MasterClient {
 
     /// Broadcast data to all connected slaves with appropriate encryption
     async fn broadcast_to_all_slaves(&self, message: MessageType) -> Result<()> {
-        println!("Broadcasting message to all connected slaves: {:?}", message);
+        // println!("Broadcasting message to all connected slaves: {:?}", message);
         // Get all connections
         let connections_vec = {
             let connections = self.connections.read().await;
             connections.clone()
         };
 
-        println!("Found {} connected slaves", connections_vec.len());
+        // println!("Found {} connected slaves", connections_vec.len());
 
         // Iterate through all connections and send the data
         for (index, conn_info) in connections_vec.iter().enumerate() {
@@ -653,7 +607,7 @@ impl MasterClient {
                     self.mark_disconnected_and_start_reconnection(conn_info.address.clone(), conn_info.key.clone()).await;
                     println!("Called mark_disconnected_and_start_reconnect for {}", conn_info.address);
                 } else {
-                    println!("Successfully sent message to slave #{}: {:?}", index, message);
+                    // println!("Successfully sent message to slave #{}: {:?}", index, message);
                 }
             } else {
                 println!("Skipping disconnected slave #{}: {:?}", index, message);

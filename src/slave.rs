@@ -129,26 +129,23 @@ pub async fn handle_slave_data_receiving(mut stream: TcpStream, encryption_manag
                                     Ok(inner_message) => {
                                         match inner_message {
                                             MessageType::Keyboard { event } => {
-                                                println!("Received keyboard event: {:?}", event);
                                                 if let Err(e) = simulate_keyboard_event_from_struct(event) {
                                                     eprintln!("Error simulating keyboard event: {}", e);
                                                 }
                                             },
                                             MessageType::Mouse { event } => {
-                                                println!("Received mouse event: {:?}", event);
                                                 if let Err(e) = simulate_mouse_event_from_struct(event) {
                                                     eprintln!("Error simulating mouse event: {}", e);
                                                 }
                                             },
                                             _ => {
-                                                println!("Received unknown message type in payload: {:?}", inner_message);
+                                                // Silently ignore unknown message types in payload
                                             }
                                         }
                                     },
                                     Err(e) => {
                                         // If deserialization fails, treat as old string format for backward compatibility
                                         let event_str = String::from_utf8_lossy(&decrypted_payload);
-                                        println!("Received data: {:?}", event_str);
                                         
                                         // Parse and simulate keyboard events from string format
                                         if let Err(e) = simulate_keyboard_event(&event_str) {
@@ -158,19 +155,17 @@ pub async fn handle_slave_data_receiving(mut stream: TcpStream, encryption_manag
                                 }
                             },
                             MessageType::Keyboard { event } => {
-                                println!("Received keyboard event: {:?}", event);
                                 if let Err(e) = simulate_keyboard_event_from_struct(event) {
                                     eprintln!("Error simulating keyboard event: {}", e);
                                 }
                             },
                             MessageType::Mouse { event } => {
-                                println!("Received mouse event: {:?}", event);
                                 if let Err(e) = simulate_mouse_event_from_struct(event) {
                                     eprintln!("Error simulating mouse event: {}", e);
                                 }
                             },
                             MessageType::Heartbeat => {
-                                println!("Received heartbeat");
+                                // Silently handle heartbeat
                             },
                             MessageType::Disconnect => {
                                 println!("Received disconnect signal");
@@ -178,11 +173,9 @@ pub async fn handle_slave_data_receiving(mut stream: TcpStream, encryption_manag
                             },
                             MessageType::Authenticate { .. } => {
                                 // Ignore authenticate messages in this context
-                                println!("Received unexpected authenticate message");
                             },
                             MessageType::AuthResponse { .. } => {
                                 // Ignore auth response messages in this context
-                                println!("Received unexpected auth response message");
                             },
                         }
                     }
