@@ -14,7 +14,7 @@ aes-gcm = "0.10"
 rand = "0.8"
 thiserror = "1.0"
 crossterm = "0.27"
-rdev = "0.5"
+rdev = { version = "0.5", features = ["unstable_grab"] }
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "minwindef", "winnt"] }
 

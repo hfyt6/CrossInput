@@ -11,7 +11,7 @@ use crate::config::Config;
 use std::collections::VecDeque;
 
 // Import rdev for low-level keyboard/mouse event capturing
-use rdev::{listen, EventType, Key};
+use rdev::{grab, EventType, Key};
 
 // Structure to hold connection info
 #[derive(Clone)]
@@ -172,7 +172,7 @@ impl MasterClient {
                             println!("Added connection to slave at {}", address);
                         } else {
                             // Update existing connection
-                            for conn_info in connections.iter_mut() {
+                            for _conn_info in connections.iter_mut() {
                                 // In this case, we're just adding new connections
                             }
                         }
@@ -251,10 +251,10 @@ impl MasterClient {
         }
     }
 
-    /// Listen for keyboard input and output events
+    /// Listen for keyboard input and output events with global interception
     async fn listen_for_keyboard_input(&self) -> Result<()> {
-        // Use rdev to capture all keyboard events, including system shortcuts like Alt+Tab
-        println!("Keyboard input listener started. Capturing ALL keyboard events including system shortcuts.");
+        // Use rdev::grab to capture and potentially intercept all keyboard events globally
+        println!("Keyboard input listener started. Capturing and intercepting ALL keyboard events including system shortcuts.");
         println!("Press 'q' to quit.");
         
         // Create a clone of self to use in the callback
@@ -262,16 +262,16 @@ impl MasterClient {
         let running = Arc::new(std::sync::Mutex::new(true));
         let running_clone = running.clone();
         
-        // Start the rdev listener in a separate thread
+        // Start the rdev grabber in a separate thread
         std::thread::spawn(move || {
-            // Define the callback function for handling events
-            if let Err(error) = listen(move |event| {
+            // Define the callback function for handling events with potential interception
+            if let Err(error) = rdev::grab(move |event| {
                 // Check if we should stop listening
                 if !*running_clone.lock().unwrap() {
-                    return;
+                    return Some(event); // Return the event normally to stop the grabber
                 }
 
-                // Process the keyboard event
+                // Process the keyboard event and decide whether to intercept it
                 match event.event_type {
                     EventType::KeyPress(key) => {
                         // Format the key event message
@@ -279,7 +279,7 @@ impl MasterClient {
                         println!("KeyDown: {} (raw event: {:?})", key_str, event);
                         
                         // Create the event message
-                        let event_message = format!("KeyDown: {} (timestamp: {:?})", key_str, event.time);
+                        let event_message = format!("KeyDown: {} (timestamp: {:?})", key_str, event);
                         
                         // Add to queue in a non-blocking way using a separate thread
                         let client_clone = client.clone_for_task();
@@ -298,6 +298,15 @@ impl MasterClient {
                             println!("Quitting keyboard listener...");
                             // Stop the listener by setting running to false
                             *running_clone.lock().unwrap() = false;
+                        }
+                        
+                        // Determine if we should intercept this key press
+                        if should_restrict(key) {
+                            // Intercept the event by returning None
+                            None
+                        } else {
+                            // Allow the event to pass through by returning Some(event)
+                            Some(event)
                         }
                     },
                     EventType::KeyRelease(key) => {
@@ -319,18 +328,27 @@ impl MasterClient {
                                 }
                             });
                         });
+                        
+                        // Determine if we should intercept this key release
+                        if should_restrict(key) {
+                            // Intercept the event by returning None
+                            None
+                        } else {
+                            // Allow the event to pass through by returning Some(event)
+                            Some(event)
+                        }
                     },
                     _ => {
-                        // Handle other event types if needed
-                        // println!("Other event: {:?}", event);
+                        // For non-keyboard events, allow them to pass through
+                        Some(event)
                     }
                 }
             }) {
-                eprintln!("Error starting rdev listener: {:?}", error);
+                eprintln!("Error starting rdev grabber: {:?}", error);
             }
         });
 
-        // Keep the async function running while the rdev listener is active
+        // Keep the async function running while the rdev grabber is active
         loop {
             // Check if the listener should stop
             if !*running.lock().unwrap() {
@@ -405,4 +423,21 @@ pub async fn send_data_to_stream_with_encryption(stream: &mut TcpStream, data: V
     stream.write_all(&serialized).await?;
     
     Ok(())
+}
+
+/// Determines if a key event should be restricted/intercepted
+/// Returns true if the key should be intercepted (not passed through to applications)
+fn should_restrict(key: Key) -> bool {
+    // For now, we'll intercept common system shortcut keys to prevent them from being processed by the local system
+    // This ensures that keyboard inputs are only processed by the remote system
+    match key {
+        // Common system shortcut keys that might interfere with the local system
+        Key::Alt | Key::AltGr => true,  // Alt and AltGr keys
+        Key::ControlLeft | Key::ControlRight => true,
+        Key::Tab => true,  // Alt+Tab, Ctrl+Tab
+        Key::Escape => true,  // Alt+Esc, Ctrl+Esc
+        Key::F1 | Key::F2 | Key::F3 | Key::F4 | Key::F5 | Key::F6 |
+        Key::F7 | Key::F8 | Key::F9 | Key::F10 | Key::F11 | Key::F12 => true,  // Common system function keys
+        _ => false,
+    }
 }
