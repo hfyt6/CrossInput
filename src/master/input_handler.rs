@@ -31,6 +31,24 @@ impl super::MasterClient {
         std::thread::spawn(move || {
             // Define the callback function for handling events with potential interception
             if let Err(error) = rdev::grab(move |event| {
+                if let EventType::KeyRelease(key) = event.event_type {
+                    if matches!(key, Key::ShiftRight) {
+                        // Clear the stdin buffer before stopping the listener
+                        clear_stdin_buffer();
+                        
+                        // Stop the listener by setting running to false
+                        let flag = *running_clone.lock().unwrap();
+                        
+                        *running_clone.lock().unwrap() = !flag;
+                        if !flag {
+                            println!("### output continue! press right-shift to pause! ###");
+                        } else {
+                            println!("### output pause! press right-shift to continue! ###");
+                        }
+                        return Some(event);
+                    }
+                }
+
                 // Check if we should stop listening
                 if !*running_clone.lock().unwrap() {
                     return Some(event); // Return the event normally to stop the grabber
@@ -102,16 +120,6 @@ impl super::MasterClient {
                                 }
                             });
                         });
-
-                        // Check if the user wants to quit (pressing 'q')
-                        if matches!(key, Key::ControlRight) {
-                            // Clear the stdin buffer before stopping the listener
-                            clear_stdin_buffer();
-                            
-                            // Stop the listener by setting running to false
-                            *running_clone.lock().unwrap() = false;
-                            return Some(event);
-                        }
                         
                         // Determine if we should intercept this key release
                         if should_restrict(key) {

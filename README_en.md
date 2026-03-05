@@ -1,5 +1,7 @@
 # CrossInput - Cross-Machine Input Sharing
 
+[中文版 (Chinese Version)](README_cn.md)
+
 CrossInput is a Rust-based application that enables sharing keyboard and mouse inputs across machines in a local network. It forwards keyboard and mouse inputs from the current host to other computers via LAN connection. Currently, only Windows is supported.
 
 ## Features
@@ -112,6 +114,12 @@ Message types include:
 
 To capture all keyboard events (including system shortcuts like Alt+Tab), the master client must be run with administrator privileges on Windows systems. This is due to Windows security restrictions on low-level keyboard hooks, which require administrator permissions to intercept system-level shortcuts.
 
+## Hotkey
+
+- **Right Shift**: Pause/Resume input forwarding
+  - Press once: Pause input forwarding
+  - Press again: Resume input forwarding
+
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the GPL-3.0 License - see the [LICENSE](LICENSE) file for details.
