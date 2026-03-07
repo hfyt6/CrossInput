@@ -31,7 +31,7 @@ impl super::MasterClient {
         std::thread::spawn(move || {
             // Define the callback function for handling events with potential interception
             if let Err(error) = rdev::grab(move |event| {
-                if let EventType::KeyRelease(key) = event.event_type {
+                if let EventType::KeyPress(key) = event.event_type {
                     if matches!(key, Key::ShiftRight) {
                         // Clear the stdin buffer before stopping the listener
                         clear_stdin_buffer();
