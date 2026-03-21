@@ -44,6 +44,9 @@ impl super::MasterClient {
                             println!("### output continue! press right-shift to pause! ###");
                         } else {
                             println!("### output pause! press right-shift to continue! ###");
+                            // 检测到暂停后，直接关闭程序
+                            println!("### Closing program... ###");
+                            std::process::exit(0);
                         }
                         return Some(event);
                     }
